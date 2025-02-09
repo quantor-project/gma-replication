@@ -31,14 +31,8 @@ library(data.table)
 library(MASS)     # for LDA 
 library(e1071)    # for SVM
 library(ggplot2)  # for modern-style lattice plots
-# library(reshape2) # transform data frame into long format
-# library(plyr)     # and manipulate this long format
 library(magrittr) # work more naturally with mvar.space objects
-# library(cluster)
-# library(htmlwidgets)
-# library(scatterD3)
 library(DT)
-# library(seriation)
 library(gplots)   # for heatmap.2
 ## and some reasonable colour palettes
 library(colorspace)
