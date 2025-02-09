@@ -1,0 +1,426 @@
+---
+title: "Adapted reproduction script from Neumann & Evert (2021)"
+author: "Stella Neumann & Stefan Evert, adapted by the QuanTOR team"
+date: "16 May 2020 / 9 Feb 2025"
+output:
+  html_document: 
+    fig_height: 7
+    fig_width: 7
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+---
+
+This is a slighlty adapted version of Neumann & Evert's (2021) reproduction script available from https://www.stephanie-evert.de/PUB/NeumannEvert2021/ (RMarkdown notebook `analysis_proceedings.Rmd` in ZIP archive [`analysis_scripts.zip`](https://www.stephanie-evert.de/PUB/NeumannEvert2021/data/analysis_scripts.zip)). In particular, it uses the original support functions in `multivar_utils.R` whereas our own replication study builds on the new R package `gmatools`. We have made the following changes to the reproduction script:
+
+- interactive 3D plots were removed, so package `rgl` is no longer needed
+- since our reproduction and replication study does not extend to the interactive scatterplot and weights viewers, data preparation for these viewers was excluded
+- some small adaptations were necessary to make the script work with our new data set `ice_preprocessed.rda`; in particular, our ICE9 data set is reduced to the original three ICE3 components
+- minor bugs had to be fixed in `mvar_utils.R`, which are caught by more recent versions of R than the one used by Neumann & Evert (2021)
+- PDF plots are saved to subdirectory `pdf_repro/` and can easily be compared with our main reproduction/replication based on `gmatools`
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(dev.args=list(pointsize=12)) # adjust graphics device
+```
+
+```{r setupScript, include=FALSE, cache=FALSE}
+source("multivar_utils.R")
+library(data.table)
+library(MASS)     # for LDA 
+library(e1071)    # for SVM
+library(ggplot2)  # for modern-style lattice plots
+# library(reshape2) # transform data frame into long format
+# library(plyr)     # and manipulate this long format
+library(magrittr) # work more naturally with mvar.space objects
+# library(cluster)
+# library(htmlwidgets)
+# library(scatterD3)
+library(DT)
+# library(seriation)
+library(gplots)   # for heatmap.2
+## and some reasonable colour palettes
+library(colorspace)
+library(corpora)
+seaborn.pal <- corpora.palette("seaborn")
+muted.pal <- corpora.palette("muted")
+bright.pal <- corpora.palette("bright")
+default.pal <- muted.pal
+```
+
+```{r utils, include=FALSE, cache=FALSE}
+## wrapper function for saving plots to PDF file
+save.pdf <- function (file, ..., out.dir="pdf_repro") {
+  if (!is.null(out.dir)) file <- sprintf("%s/%s", out.dir, file)
+  invisible(dev.copy2pdf(file=file, ..., out.type="cairo"))
+}
+```
+
+
+# The ICE data set
+
+Load the preprocessed data set.
+
+```{r loadData, echo=1}
+var.names <- load("ice_preprocessed.rda")
+cat(paste(var.names, collapse=", "), "\n")
+```
+All metadata variables are already coded as factors with a sensible ordering of categories, so no further pre-processing is required here. The data set also includes rainbow colours for text categories and readable feature names. There are `r nrow(Meta)` texts.  See `prepare_data.Rmd` for details about the distribution of metadata categories and text lengths.
+
+## Reduce to ICE3
+
+Since the original reproduction script expects a data set covering only the ICE3 components, we have to reduce data matrices, metadata, and the list of language variety types.
+
+```{r reduceToICE3}
+ice3.comp <- qw("icehk icejam icenz")
+idx <- Meta$variety %in% types.variety[ice3.comp]
+Meta <- droplevels(Meta[idx, ])
+Features <- Features[idx, ]
+M <- M[idx, ]
+Z <- Z[idx, ]
+ZL <- ZL[idx, ]
+rand.idx <- rank(rand.idx[rand.idx %in% which(idx)])
+types.variety <- types.variety[ice3.comp]
+types.shortvar <- types.shortvar[ice3.comp]
+```
+
+
+# Dimensions of variation
+
+## Unsupervised PCA
+
+A standard PCA based on z-scores reveals dimensions of register variation that correspond fairly well to the broad text categories in ICE.
+
+```{r normalPCA}
+PCA <- mvar.space(Z)
+Z.pca <- mvar.projection(PCA, space="both")
+mvar.pairs(Z.pca, 1:4, Meta=Meta, col=textcat20, pch=variety, 
+           pch.vals=c(1, 3, 4), col.vals=rainbow.20, 
+           cex=.6, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("pca4z_type.pdf")
+```
+
+The PCA based on log-transformed looks quite similar. Individual outliers are reduced and the main dimensions in the top left panel seem to show a little more structure. Therefore, we will exclusively use the log-transformed z-scores from now on.
+
+```{r logPCA}
+PCA <- mvar.space(ZL)
+ZL.pca <- mvar.projection(PCA, space="both")
+mvar.pairs(ZL.pca, 1:4, Meta=Meta, 
+           col=textcat20, col.vals=rainbow.20,
+           pch=variety, pch.vals=c(1, 3, 4), 
+           cex=.6, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("pca4_type.pdf")
+```
+
+Do the main dimensions of variation also capture differences between the language varieties?  A few regions occupied by a single variety likely correspond to discrepancies between text categories in the three corpora.
+
+```{r logPCAvar}
+mvar.pairs(ZL.pca, 1:4, Meta=Meta, 
+           col=variety, col.vals=bright.pal,
+           pch=variety, pch.vals=c(1, 3, 4),
+           cex=.6, legend.cex=.8, iso=TRUE, compact=TRUE)
+save.pdf("pca4_var.pdf")
+```
+
+
+# LDA discriminant for text categories
+
+## Minimally supervised LDA and rotation
+
+We now carry out an LDA by text category.  Since there are 20 distinct categories, there will be a much larger number of discriminant dimensions.
+
+```{r typeLDA}
+lda.type <- mvar.discriminant(ZL, Meta$textcat20)
+ByType <- mvar.space(ZL, lda.type, normalize=TRUE) 
+ByType.M <- mvar.projection(ByType, "both")
+lda.type.P <- mvar.basis(ByType, "space")
+mvar.pairs(ByType.M, 1:6, Meta=Meta, 
+           col=textcat20, pch=variety, pch.vals=c(1, 3, 4), col.vals=rainbow.20,
+           cex=.6, legend.cex=.4, iso=TRUE, compact=TRUE)
+save.pdf("lda6type_type.pdf", width=8, height=8)
+```
+
+There are `r ncol(ByType$basis)` LDA dimensions, most of which capture interesting and substantial differences between text categories.  An SVM classifier shows that together they separate the 20 text categories fairly well (with classification accuracy > 70%, though overtrained by the LDA).
+
+```{r typeLDAsvm}
+res.type <- svm(ByType.M[, 1:19], Meta$textcat20, kernel="radial", cross=10)
+svm.report <- function (res) {
+  acc <- mean(res$accuracies)
+  cat(sprintf("Mean accuracy: %.1f%%\n", acc))
+  cat("Cross-validation folds:\n")
+  print(round(res$accuracies, 1))
+}
+svm.report(res.type)
+```
+ 
+However, this is not a useful perspective on the high-dimensional data set: it is impossible to grasp a `r ncol(ByType$basis)`-dimensional visualization intuitively and it would not provide a substantial reduction from the original feature space.  The first 5 or 6 dimensions provide a discrimination accuracy well above 60%, and the first 4 are already close to 60%.  We will therefore focus on LDA dims 1 to 4.
+
+```{r typeLDAsvm6}
+res.type <- svm(ByType.M[, 1:4], Meta$textcat20, kernel="radial", cross=10)
+svm.report(res.type)
+```
+
+In order to estimate how much information is lost by focusing on these dimensions, we compute pairwise discrimination quality between text categories.  The only practicable way seems to be to find a single LDA discriminant dimension for each category pair and compute classification accuracy and Cohen $d$:
+
+```{r discriminatePairwise}
+discriminate.categories <- function (M, cats, digits=NULL) {
+  stopifnot(length(cats) == 2, all(cats %in% levels(Meta$textcat20)))
+  idx <- Meta$textcat20 %in% cats
+  y <- droplevels(Meta$textcat20[idx])
+  x <- M[idx, , drop=FALSE]
+  res <- predict(lda(x, y)) # LDA classification + dimension scores
+  acc <- 100 * sum(res$class == y) / length(y)
+  d <- abs(cohen.d(res$x[y == cats[1]], res$x[y == cats[2]]))
+  if (!is.null(digits)) {
+    acc <- round(acc, digits)
+    d <- round(d, digits)
+  }
+  data.frame(acc=acc, d=d, cat1=cats[1], cat2=cats[2], row.names=NULL,
+             stringsAsFactors=FALSE)
+}
+discriminate.pairwise <- function (M, cats, sort=FALSE, digits=NULL) {
+  cat.pairs <- combn(cats, 2, simplify=FALSE)
+  res <- lapply(cat.pairs, discriminate.categories, M=M, digits=digits)
+  res <- do.call(rbind, res)
+  if (sort) res <- res[order(res$d), ]
+  res
+}
+```
+
+In the full LDA space, all pairs of text categories can bed discriminated fairly well, but with fewer dimensions some categories are collapsed.  We obtain pairwise discrimination scores for different numbers of LDA dimensions and combine them into a single data frame. Interactively explore this table in order to find text categories that collapse due to our focus on 4 dimensions.
+
+```{r discriminateCategoriesLDA}
+res <- discriminate.pairwise(ByType.M, types.textcat20, digits=2)
+res.6 <- discriminate.pairwise(ByType.M[, 1:6], types.textcat20, digits=2)
+res.4 <- discriminate.pairwise(ByType.M[, 1:4], types.textcat20, digits=2)
+stopifnot(all.equal(res[, qw("cat1 cat2")], res.6[, qw("cat1 cat2")]),
+          all.equal(res[, qw("cat1 cat2")], res.4[, qw("cat1 cat2")]))
+res$acc.6 <- res.6$acc; res$d.6 <- res.6$d
+res$acc.4 <- res.4$acc; res$d.4 <- res.4$d
+discrim.table <- res[order(res$d.4), ]
+datatable(discrim.table, options=list(order=list(list(8, "asc"))),
+          caption = "Text category discrimination in full LDA space")
+```
+```{r, fig.width=6, fig.height=6}
+discrim.mat <- matrix(0, length(types.textcat20), ncol=length(types.textcat20),
+                      dimnames=list(types.textcat20, types.textcat20))
+with(discrim.table, {
+  discrim.mat[cbind(cat1, cat2)] <<- acc.4
+  discrim.mat[cbind(cat2, cat1)] <<- acc.4
+})
+discrim.pal <- heat_hcl(20, h=c(-20, 90), l=c(20,100))
+heatmap.2(discrim.mat, zlim=c(0, 100), col=discrim.pal, margins=c(12, 12), 
+    cexRow=1.2, cexCol=1.2, srtRow=30, srtCol=60, trace="none",
+    keysize=1, key.xlab="discrimination accuracy",
+    main="discrimination accuracy in 4 LDA dims")
+save.pdf("lda4type_discrimination.pdf", width=8, height=8)
+```
+
+In an extension of our previous methodology, we now apply a rotation in the reduced target space so that interesting structure is better aligned with the subspace dimensions (instead of visually picking out an “axis” of interest).  Since dims 1 and 2 are strongly correlated (Pearson $r$ = `r cor(ByType.M[,1], ByType.M[,2])`), a PCA-based rotation should align the diagonal axis with the first dimension.  Note that a full PCA rotation in all four dimensions would lose too much of the discriminative structure brought out by the LDA (where the first dimension maximises the ratio of between-group and within-group variance).  In an earlier version of the analysis we also flipped the two dimensions after rotation so that the largest variance is on the horizontal axis in the top-left panel of the scatterplot matrix and in 3D plots. However, it is much clearer to have the main dimension of variation as dimension 1.
+
+```{r typeLDA4rotation}
+ByType4 <- ByType %>% mvar.basis("space") %>% extract(, 1:4) %>% mvar.space(ZL, .)
+ByType4 %<>% mvar.rotation("pca", dims=1:2) # %>% mvar.rotation("swap", dims=1:2)
+ByType4.M <- mvar.projection(ByType4, "both")
+ByType4.P <- mvar.basis(ByType4, "space")
+```
+
+This four-dimensional latent space is the basis for all further analysis and interpretation.
+
+```{r typeLDA4}
+mvar.pairs(ByType4.M, 1:4, Meta=Meta, 
+           col=textcat20, pch=variety, pch.vals=c(1, 3, 4), col.vals=rainbow.20,
+           cex=.6, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("lda4type_type.pdf", width=8, height=8)
+```
+
+There appear to be two overlapping “cigars” formed by the written and spoken texts.  A scatterplot matrix colour-coded for mode shows this clearly.
+
+```{r typeLDA4mode}
+mvar.pairs(ByType4.M, 1:4, Meta=Meta, 
+           col=mode, pch=variety, pch.vals=c(1, 3, 4), col.vals=bright.pal,
+           cex=.6, legend.cex=.8, iso=TRUE, compact=TRUE)
+save.pdf("lda4type_mode.pdf", width=8, height=8)
+```
+
+We create a custom version of the scatterplot matrix for inclusion in the paper, showing only the top row of the scatterplot matrix separately for spoken and written texts.  It is written directly to a PDF file to ensure proper font sizes and layout.
+
+```{r customLDA4scatterplot}
+# cairo_pdf(file="pdf_repro/lda4type_for_paper.pdf", width=12, height=8)
+pch.vec <- c(1, 3, 4)[Meta$variety]
+col.vec <- rainbow.20[Meta$textcat20]
+plot.panel <- function (d, idx, cex=1, # -> 3:4 aspect ratio
+                        xlim=c(-2.05, 2.0), ylim=c(-3.1, 2.3)) {
+  plot(ByType4.M[idx, d], ByType4.M[idx, 1], 
+       pch=pch.vec[idx], col=col.vec[idx], 
+       xlim=xlim, ylim=ylim, cex=cex,
+       xlab="", ylab="", main="", xaxt="n", yaxt="n")
+}
+textcat.W <- unique(Meta$textcat20[Meta$mode == "written"])
+idx.lW <- types.textcat20 %in% textcat.W
+
+par(mfrow=c(2, 4), mar=c(0, 0, 0, 0)+.2)
+idx.W <- Meta$mode == "written"
+plot.panel(2, idx.W)
+text(-2, -0.4, "Dim 1", cex=1.2, srt=90, font=2)
+plot.panel(3, idx.W)
+plot.panel(4, idx.W)
+plot(0, 0, type="n", ann=FALSE, bty="n", xaxt="n", yaxt="n")
+legend(0, 0, xjust=0.5, yjust=0.5, cex=1.3,
+       title="Written Texts", bty="n",
+       legend=types.textcat20[idx.lW], 
+       fill=rainbow.20[idx.lW], border=rainbow.20[idx.lW])
+
+idx.S <- Meta$mode == "spoken"
+plot.panel(2, idx.S)
+text(-2, -0.4, "Dim 1", cex=1.4, srt=90, font=2)
+text(0, 2.3, "Dim 2", cex=1.4, font=2)
+plot.panel(3, idx.S)
+text(0, 2.3, "Dim 3", cex=1.4, font=2)
+plot.panel(4, idx.S)
+text(0, 2.3, "Dim 4", cex=1.4, font=2)
+plot(0, 0, type="n", ann=FALSE, bty="n", xaxt="n", yaxt="n")
+legend(0, 0, xjust=0.5, yjust=0.5, cex=1.3,
+       title="Spoken Texts", bty="n",
+       legend=types.textcat20[!idx.lW], 
+       fill=rainbow.20[!idx.lW], border=rainbow.20[!idx.lW])
+save.pdf("lda4type_for_paper.pdf", width=12, height=8)
+# invisible(dev.off())
+```
+
+
+## LDA on original text categories
+
+The original 32 text categories in the fine-grained ICE design schema were aggregated into 20 broader categories, which are more manageable in our visualisation-based approach. This seems to be corroborated by the fact that no differences between the finer sub-categories are visible in our four LDA dimensions: they are spread out and intermingled evenly across the broader category. However, another explanation is that our LDA -- based on the 20-category scheme -- has ignored differences between the subcategories, aiming to reduce variability within the broader category.
+
+Here, we carry out an alternative LDA using the 32-category scheme as a “gold standard” and compare the first four latent dimensions.  The dimensions are automatically reordered and flipped to best match those of the original LDA.
+
+```{r type32LDA}
+lda.type32 <- mvar.discriminant(ZL, Meta$textcat32)
+ByType32 <- mvar.space(ZL, lda.type32[, 1:4], normalize=TRUE)
+lda.type32.P <- mvar.basis(ByType32, "space") # original orthogonalised dims
+ByType32 %<>% mvar.rotation("pca", dims=1:2) %>% mvar.rotation("match", basis=ByType4.P)
+ByType32.M <- mvar.projection(ByType32, "both")
+ByType32.P <- mvar.basis(ByType32, "space")
+mvar.pairs(ByType32.M, 1:4, Meta=Meta, 
+           col=textcat32, pch=variety, pch.vals=c(1, 3, 4), col.vals=rainbow.32,
+           cex=.6, legend.cex=.55, iso=TRUE, compact=TRUE)
+save.pdf("lda4type32_type.pdf", width=8, height=8)
+```
+
+Overall the visualisation looks reassuringly similar.  We do get better separation between the more fine-grained categories, but the overall shape remains the same. It seems safe thus to report our findings based on the 20-category scheme.
+
+
+We compute similarity of the two LDA analyses as the (fractional) number of common dimensions (see SIGIL Unit #7 for details), which indicates a very good match between the two spaces.
+
+```{r LDAsimilarity}
+mvar.similarity(ByType4.P, ByType32.P)
+```
+
+The expected $R^2$ for projection between the subspaces is `r sprintf("%.1f%%", 100 * mvar.similarity(ByType4.P, ByType32.P, "R2"))`.  The vector of singular values shows that the two subspaces (almost) share three dimensions, with relatively high cosine similarity in the fourth dimension.
+
+```{r LDAsimilarityDetails}
+mvar.similarity(ByType4.P, ByType32.P, method="sigma")
+```
+
+Verify that we indeed get the same result without matching the basis vectors beforehand:
+
+```{r LDAsimilarityCheck}
+mvar.similarity(lda.type.P[, 1:4], lda.type32.P, method="sigma")
+```
+
+
+# Interpreting the dimensions
+
+## Feature weights and boxplots
+
+The standard approach in multidimensional analysis is to interpret the feature weights (or “factor loadings”) of each latent dimension directly. In our case, these weights are the coordinates of the orthogonal basis vectors of the LDA space. The barplot below visualizes only features $i$ that have a substantial weight $|p_{ij}| \geq .1$ in at least one dimension $j$.  Keep in mind that feature weights are relative within each basis vector (because $\|\mathbf{p}_{\bullet j}\|_2 = 1$); a discriminant characterised by consistently large values of many different features would assign relatively low weights to all of them.
+
+```{r LDAweights, fig.height=4}
+ByType4.P <- mvar.basis(ByType4, "space")
+idx.weights <- apply(abs(ByType4.P), 1, max) >= .1 # only show features with substantial weight
+ggbar.weights(ByType4.P, feature.names=feature.names, names=paste("Dim", 1:4), 
+              idx=idx.weights, ylim=c(-.75, .4))
+save.pdf("lda4type_weights.pdf", width=12, height=8)
+```
+
+For comparison, we show the first two original LDA dimensions before PCA rotation (but only for the features selected above).
+
+```{r LDAweightsOrig, fig.height=3, fig.width=6}
+ggbar.weights(lda.type.P[, 1:2], feature.names=feature.names,
+              idx=idx.weights, ylim=c(-.75, .4),
+              names=c("Original LDA dim 1", "Original LDA dim 2"))
+save.pdf("lda6type_weights.pdf", width=12, height=4.5)
+```
+
+For the paper, we create individual plots for each dimension with suitable margins and labelling. They are directly written to PDF files for optimal formatting.
+
+```{r LDAweightsByDim}
+dim2label <- c("LD1" = "Dim 1: conceptual speaking / conceptual writing",
+               "LD2" = "Dim 2: dialogic written / neutral",
+               "LD3" = "Dim 3: descriptive-narrative / instructive-regulative",
+               "LD4" = "Dim 4: neutral / online production")
+for (d in seq_len(ncol(ByType4.P))) {
+  cairo_pdf(file=sprintf("pdf_repro/lda4type_weights_dim%d.pdf", d), 
+            width=12, height=4)
+  p <- ByType4.P[, d, drop=FALSE] %>%
+    ggbar.weights(feature.names=feature.names, names=paste("Dim", d),# names=dim2label[d],
+                  idx=idx.weights, ylim=c(-.75, .4), main=dim2label[d])
+  print(p + theme(axis.text.x=element_text(size=14)))
+  dev.off()
+}
+```
+
+
+As we've argued before, especially for LDA-based dimensions, it is more informative to visualise how each feature pushes the texts from some category or group towards the positive or negative end of a dimension.  We use a wrapper around `ggbox.features()` to pick out categories and plot accordingly.
+
+```{r ggboxSelected, fig.width=12, fig.height=8}
+ggbox.selected <- function (M, Meta, weights, cats,
+                            variable="short20", colours=rainbow.20,
+                            what="contribution", main="", 
+                            group.labels=FALSE, ...) {
+  stopifnot(all(cats %in% names(colours)), 
+            all(cats %in% levels(Meta[[variable]])))
+  group.vec <- as.character(Meta[[variable]])
+  Meta$grouping <- factor(ifelse(group.vec %in% cats, group.vec, "other"),
+                          levels=c("other", cats))
+  col.values <- c("#666666", colours[cats])
+  ggbox.features(M, Meta, what=what, 
+                 weights=weights, id.var="id",
+                 group=grouping, group.palette=col.values,
+                 feature.names=feature.names, 
+                 main=main, group.labels=group.labels, ...) +
+    theme(strip.text.x=element_text(angle=70, hjust=0.2, vjust=0.2))
+}
+ggbox.selected(ZL, Meta, ByType4.P[, 1], select=idx.weights,
+               cats=qw("conv,acad", sep=",\\s*"), 
+               main=dim2label["LD1"])
+save.pdf("lda4type_box_example1.pdf", width=12, height=8)
+```
+
+We can also plot other dimensions, or select subsets of texts (e.g. a particular variety). The code chunk below illustrates relevant parameters, focusing on the third LDA dimension.
+
+```{r ggboxSelectedExamples, fig.width=12, fig.height=8}
+ggbox.selected(ZL, Meta, ByType4.P[, 3],
+               cats=qw("conv,acad", sep=",\\s*"), 
+               select=idx.weights, subset=(shortvar == "NZ"),
+               main=sprintf("%s - New Zealand", dim2label["LD3"]))
+save.pdf(file="lda4type_box_example2.pdf", width=12, height=8)
+ggbox.selected(ZL, Meta, ByType4.P[, 3],
+               cats=qw("acad,popSci,creat", sep=",\\s*"),
+               variable="short12", colours=rainbow.12,
+               select=idx.weights,
+               main=sprintf("%s", dim2label["LD3"]))
+save.pdf(file="lda4type_box_example3.pdf", width=12, height=8)
+```
+
+Boxes can be formed based on arbitrary metadata variables, provided that we have a suitably labelled vector of colour codes. Here we create one bespoke box with modified formatting for inclusion in the paper:
+
+```{r ggboxSelectedForPaper, fig.width=12, fig.height=8}
+ggbox.selected(ZL, Meta, ByType4.P[, 1], select=idx.weights,
+               cats=qw("conv,news", sep=",\\s*"), 
+               main=dim2label["LD1"], ylim=c(-1.1, 1.0), group.labels=TRUE) +
+  theme(axis.text.x=element_text(angle=52, hjust=1), legend.position="none") 
+save.pdf("lda4type_box_figure4.pdf", width=12, height=9)
+```

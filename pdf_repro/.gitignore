@@ -1,0 +1,3 @@
+# empty directory for generated files (ignore everything except .gitignore)
+*
+!.gitignore

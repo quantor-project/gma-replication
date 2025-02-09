@@ -1,0 +1,374 @@
+---
+title: "Data preparation for extended ICE analysis"
+author: "Stephanie Evert & the QuanTOR team"
+date: "22 January 2025"
+output:
+  html_document: 
+    fig_height: 7
+    fig_width: 7
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+---
+
+This script has been adapted from the reproduction materials provided by Neumann & Evert (2021) at https://www.stephanie-evert.de/PUB/NeumannEvert2021/, in particular the script `prepare_data.Rmd` from ZIP archive [`analysis_scripts.zip`](https://www.stephanie-evert.de/PUB/NeumannEvert2021/data/analysis_scripts.zip).
+
+# English texts from the International Corpus of English (nine components)
+
+```{r setup, results="hide"}
+suppressMessages(library(data.table))
+library(ggplot2)
+library(ggExtra)
+library(grid) # needed to work around bug in ggMarginal
+library(seriation)
+library(colorspace)
+library(kableExtra)
+library(corpora)
+```
+
+## Data set and pre-processing
+
+We begin by loading data tables containig **metadata** and **feature vectors** for the three components of ICE to be analysed
+
+```{r loadData}
+Meta <- fread("ice_metadata.csv", encoding="UTF-8")
+setkey(Meta, id)
+Features <- fread("ice_features.tsv", encoding="UTF-8")
+setkey(Features, id)
+```
+
+Occasionally, ICE components include texts that consist only of extra-corpus material. As a result, we have metadata information for these text but no feature vectors. Currently, there is a single case in our data:
+
+```{r matchTextIDs}
+Meta[!(id %in% Features$id)]
+```
+
+We therefore need to reduce the `Meta` table to existing texts, at the same time ensuring that we have metadata information for all texts and there are no ID mismatches.
+
+```{r}
+stopifnot(all(Features$id %in% Meta$id))
+Meta <- Meta[id %in% Features$id]
+```
+
+There are `r nrow(Meta)` rows in both tables and the text IDs (`id`) match (`r (nrow(Meta) == nrow(Features)) && all(Meta$id == Features$id)`).  Since we index the data.tables by text ID, which automatically sorts them alphabetically, we cannot randomize the order of the rows as in previous analyses.  We have also made sure that the IDs are unique: `r !any(duplicated(Meta$id))`.
+
+### Normalization based on word counts
+
+Note that relative frequencies in the feature vectors are based on _word counts_ rather than token counts now.  This was made possible by the new feature extraction pipeline using the `cwb-featex` tool (and by the fact that ICE is small enough so that the very inefficient query for word counts can still be executed).
+
+### Cleanup
+
+First we check the data to see whether we have to clean it up:
+
+ - the feature `salutation_S` is excluded because it is extremely sparse (and hence produces extreme z-scores)
+ - the frequency of attributive adjectives (`atadj_W`) is highly correlated with the overall frequency of adjectives (`adj_W`), especially in English texts; we therefore use non-attributive ("predicative") adjectives (`predadj_W`) rather than (`adj_W`)
+
+```{r cleanupTable}
+Features[, qw("salutation_S adj_W") := NULL]
+```
+
+We also discard `r Features[word < 100 | sent < 10, .N]` texts with less than 100 words or less than 10 sentences because the quantitative features will be too unreliable and are prone to create outliers in the multivariate analysis.  Before we do so, let's check whether this affects the sub-corpora in substantially different ways.
+
+```{r checkDiscardShortTexts}
+to.discard <- Features[, !(word >= 100 & sent >= 10)]
+res <- table(to.discard, Meta$variety)
+print(res)
+print(round(100 * prop.table(res, margin=2), 2))
+```
+
+For each component, we lose between 5% and 14% of the texts, which we consider acceptable. One of the first aims of QuanTOR is to extend GMA so that it can also be applied to such short texts.
+
+We should also check whether certain text categories are affected particularly strongly by the exclusion of short texts.
+
+```{r checkShortTextCategories}
+table(Meta$category, to.discard)
+```
+
+Proportions of excluded texts are reasonable for the other components, so let's proceed with this filter.
+
+```{r discardShortTexts}
+Features <- subset(Features, word >= 100 & sent >= 10)
+Meta <- Meta[Features$id, ]
+```
+
+After cleanup, there are `r nrow(Features)` texts and `r ncol(Features) - 1` features in the data set, including sentence, token and word counts.  The two tables are still consistent (`r (nrow(Meta) == nrow(Features)) && all(Meta$id == Features$id)`).
+
+## Text categories
+
+A revised set of text categories has been provided in file `text_categories.tsv`, which defines both category labels at three different layers of granularity (with 32, 20 and 12 categories) and the standard ordering of the categories.
+
+```{r loadTextCat}
+TextCat <- fread("text_categories.tsv", encoding="UTF-8")
+```
+
+We use this information to generate appropriate factor levels and colour coding for later visualisation.  First check that there are no unexpected duplicates and full names, short labels and category codes match at every layer.
+
+```{r checkTextCatInfo}
+has.distinct <- function (tbl, n=32) 
+  stopifnot(length(unique(do.call(paste, as.list(tbl)))) == n)
+has.distinct(TextCat[, .(category)])
+has.distinct(TextCat[, .(textcat32)])
+has.distinct(TextCat[, .(short32)]) # combinations of name, short label
+has.distinct(TextCat[, .(code32)])  # and code are necessarily unique
+has.distinct(TextCat[, .(textcat20)], 20)
+has.distinct(TextCat[, .(short20)], 20)
+has.distinct(TextCat[, .(code20)], 20)
+has.distinct(TextCat[, .(textcat20, short20, code20)], 20)
+has.distinct(TextCat[, .(textcat12)], 12)
+has.distinct(TextCat[, .(short12)], 12)
+has.distinct(TextCat[, .(code12)], 12)
+has.distinct(TextCat[, .(textcat12, short12, code12)], 12)
+```
+
+We now collect text category names, short labels and codes in the specified ordering (to be used as factor levels and for labeling visualisations).  Note that the levels are aligned at each granularity, so it is easy to map between names, labels and codes.   Similar vectors of levels are created for written vs. spoken mode, text format, and for the nine varieties (named to facilitate mapping the metadata table).
+
+```{r metaLevels}
+types.variety <- qw("New Zealand, Jamaica, Hong Kong, India, Philippines, Singapore, Canada, Ireland, Great Britain", sep=",\\s*")
+types.shortvar <- qw("NZ JAM HK IND PHI SIN CAN IRE GB")
+names(types.variety) <- names(types.shortvar) <- qw("icenz icejam icehk iceind icephi icesing icecan iceire icegb")
+types.mode <- qw("written spoken")
+types.format <- qw("printed non-printed monologue dialogue")
+types.textcat32 <- unique(TextCat$textcat32)
+types.short32 <- unique(TextCat$short32)
+types.code32 <- unique(TextCat$code32)
+types.textcat20 <- unique(TextCat$textcat20)
+types.short20 <- unique(TextCat$short20) 
+types.code20 <- unique(TextCat$code20)
+types.textcat12 <- unique(TextCat$textcat12)
+types.short12 <- unique(TextCat$short12)
+types.code12 <- unique(TextCat$code12)
+```
+
+We also generate aligned rainbow colour vectors for the three layers of granularity, with short labels for easy lookup.  For the less fine-grained categories, the colour of the “middle” sub-category is selected. 
+
+```{r metaColours}
+col.vec <- rainbow_hcl(32, c = 80, l = 60)
+rainbow.32 <- structure(col.vec, names=types.short32)
+tmp <- TextCat[, .(col = col.vec[mean(.I)]), by=short20]
+rainbow.20 <- structure(tmp$col, names=tmp$short20)
+stopifnot(all.equal(names(rainbow.20), types.short20))
+tmp <- TextCat[, .(col = col.vec[mean(.I)]), by=short12]
+rainbow.12 <- structure(tmp$col, names=tmp$short12)
+stopifnot(all.equal(names(rainbow.12), types.short12))
+```
+
+An overview table of the colour vectors shows that they are correctly aligned.  It is also exported to a PDF file as a handy reference.
+
+```{r plotColours}
+par(mfrow=c(1, 3), mar=c(0,0,1,0))
+mp <- barplot(rep(1, 32), col=rainbow.32, horiz=TRUE,
+              xlim=c(0, 3), xaxt="n", main="32 categories")
+text(1.1, mp, types.textcat32, adj=c(0, .5))
+barplot(rep(1, 32), col=rainbow.20[TextCat$short20], 
+        horiz=TRUE, xlim=c(0, 3), xaxt="n", main="20 categories")
+text(1.1, mp, TextCat$textcat20, adj=c(0, .5))
+barplot(rep(1, 32), col=rainbow.12[TextCat$short12], 
+        horiz=TRUE, xlim=c(0, 3), xaxt="n", main="12 categories")
+text(1.1, mp, TextCat$textcat12, adj=c(0, .5))
+invisible(dev.copy2pdf(file="pdf_journal/colour_key_textcat.pdf", out.type="cairo"))
+```
+
+
+## Revise metadata
+
+We can now merge the additional information into the Metadata table and remove meta variables that are no longer needed. Before the merge, we make sure that the `category` labels are identical for both data frames.
+
+```{r joinMetadata}
+stopifnot(setequal(TextCat$category, Meta$category))
+Meta <- merge(Meta, TextCat, by="category")
+Meta[, qw("category type") := NULL] # redundant columns
+```
+
+We also recode the language variety labels in long and short forms.
+
+```{r recodeLabels}
+Meta[, shortvar := types.shortvar[variety]]
+Meta[, variety := types.variety[variety]]
+```
+
+We also have to make sure that `Meta` is still aligned with `Features` (by re-sorting on ID).
+
+```{r realignMeta}
+setkey(Meta, id)
+stopifnot(all.equal(Meta$id, Features$id))
+```
+
+Finally, all meta-variables are coded as factors with correct levels and ordering.
+
+```{r encodeFactors}
+Meta <- transform(
+  Meta,
+  variety = factor(variety, levels=types.variety),
+  shortvar = factor(shortvar, levels=types.shortvar),
+  mode = factor(mode, levels=types.mode),
+  format = factor(format, levels=types.format),
+  textcat32 = factor(textcat32, levels=types.textcat32),
+  short32 = factor(short32, levels=types.short32),
+  code32 = factor(code32, levels=types.code32),
+  textcat20 = factor(textcat20, levels=types.textcat20),
+  short20 = factor(short20, levels=types.short20),
+  code20 = factor(code20, levels=types.code20),
+  textcat12 = factor(textcat12, levels=types.textcat12),
+  short12 = factor(short12, levels=types.short12),
+  code12 = factor(code12, levels=types.code12))
+```
+
+## Metadata distributions
+
+Let us now take a look at the metadata categories. (NB: using `kbl()` and `kable_styling()` ensures that tables display reasonably well in RStudio notebooks running in dark mode)
+
+```{r metaDist}
+kbl(xtabs(~ textcat32 + shortvar, data=Meta)) |> kable_styling()
+kbl(xtabs(~ textcat20 + shortvar, data=Meta)) |> kable_styling()
+kbl(xtabs(~ textcat12 + shortvar, data=Meta)) |> kable_styling()
+kbl(xtabs(~ mode + shortvar, data = Meta))    |> kable_styling()
+```
+
+There is some imbalance in the number of text samples in the nine varieties and their distribution across text categories, but this is due to the design of and artefacts in the ICE corpora.
+
+## Text lengths
+
+Text lengths vary wildly, including many short texts with highly unreliable feature counts. The distributions look roughly balanced across the three varieties, but there is a large group of texts with approximately 2000 tokens.  This indicates a target text size of 2000 words per text.  
+
+The two plots below compare how excluding extra-corpus material has affected the text sizes.
+
+```{r textLengthsByVariety}
+grid.newpage()
+tmp <- cbind(Features, Meta[, .(variety)])
+p <- ggplot(tmp, aes(x=word, y=sent, col=variety)) +
+  scale_x_log10(limits=c(100, 10000)) + scale_y_log10(limits=c(10, 1700)) +
+  geom_point(cex=.4) + labs(x="number of tokens", y="number of sentences") +
+  guides(colour = guide_legend(override.aes = list(size=2))) +
+  labs(title="Text lengths across all 9 ICE components")
+p <- ggMarginal(p, groupColour=TRUE, groupFill=TRUE)
+grid.draw(p)
+invisible(dev.copy2pdf(file="pdf_journal/stats_textlength_by_variety.pdf", out.type="cairo"))
+```
+
+Also check how much text lengths differ between text categories.
+
+```{r textLengthsByCat}
+grid.newpage()
+tmp <- cbind(Features, Meta[, .(variety, short12)])
+p <- ggplot(tmp, aes(x=word, y=sent, col=short12)) +
+  scale_x_log10() + scale_y_log10() + scale_colour_manual(values=rainbow.12) +
+  geom_point(size=.4) + labs(x="number of tokens", y="number of sentences") + 
+  guides(colour = guide_legend(override.aes = list(size=2))) +
+  labs(title="Text lengths across 12 text categories")
+p <- ggMarginal(p, groupColour=TRUE, groupFill=TRUE)
+grid.draw(p)
+invisible(dev.copy2pdf(file="pdf_journal/stats_textlength_by_cat12.pdf", out.type="cairo"))
+```
+
+# Feature distributions
+
+We transform the feature matrix from a data.table to an actual numeric matrix `M`, excluding the word and sentence counts.
+
+```{r featureMatrix}
+M <- as.matrix(Features[, -c(1:4)])
+rownames(M) <- Features$id
+```
+
+Different features have entirely different ranges and distributions:
+
+```{r featureDist}
+par(mar=c(8,2,2,0.1))
+boxplot(M, ylim=c(0,3), las=3, main="raw values")
+invisible(dev.copy2pdf(file="pdf_journal/stats_boxplot_M.pdf", out.type="cairo", width=10, height=6))
+```
+
+We therefore standardize all features to z-scores as in previous work.  The distributions are still highly skewed with some extreme outliers.  As an alterantive to removing very sparse feature, we apply a signed logarithmic transformation to deskew the feature distributions.
+
+```{r standardizeFeatures}
+Z <- scale(M)
+par(mar=c(8,2,2,0.1))
+boxplot(Z, las=3, main="z-scores")
+invisible(dev.copy2pdf(file="pdf_journal/stats_boxplot_Z.pdf", out.type="cairo", width=10, height=6))
+
+## signed logarithmic transformation that is smooth at 0
+signed.log <- function (x, base=exp(1)) {
+  sign(x) * log(1 + abs(x), base=base)
+}
+ZL <- signed.log(Z)
+boxplot(ZL, las=3, main="log-transformed z-scores")
+invisible(dev.copy2pdf(file="pdf_journal/stats_boxplot_ZL.pdf", out.type="cairo", width=10, height=6))
+```
+
+Is this standardisation across all 9 ICE components different from the one used by Neumann & Evert (2021), which was based on just 3 language varieties? 
+, or to standardise across all 9 ICE components. To assess what difference this makes, compare the respective means and standard deviations.
+
+```{r compareMeansSD}
+idx.3 <- Meta$shortvar %in% qw("NZ JAM HK")
+res <- data.frame(
+  mu3=colMeans(M[idx.3, ]), 
+  mu9=colMeans(M),
+  mu9scale=attr(Z, "scaled:center"),
+  sd3=apply(M[idx.3, ], 2, sd),
+  sd9=apply(M, 2, sd),
+  sd9scale=attr(Z, "scaled:scale"))
+knitr::kable(res, digits=5)
+```
+
+Most of the differences seem small enough so that they should not have a substantial effect on the resulting z-scores and analysis. One indicator is to show the difference between the means in z-units, i.e. scaled by the (smaller) standard deviation.
+
+```{r compareZUnits}
+tmp <- with(
+  res, 
+  structure((mu9 - mu3) / pmin(sd9, sd3),
+            names=rownames(res)))
+round(tmp, 3)
+```
+
+We check for collinearities and excessive correlation patterns between the features. Unfortunately adding a colour key to the plot is no longer supported.
+
+```{r correlationMatrix, fig.width=8, fig.height=8}
+fnames <- colnames(Z)
+cor.colors <- diverge_hsv(101, power=1)
+par(cex=.5)
+hmap(cor(Z), zlim=c(-1, 1), col=cor.colors, margins=c(7, 7), 
+     cexRow=.8, cexCol=.8,
+     main="correlation of z-scores for all texts")
+invisible(dev.copy2pdf(file="pdf_journal/stats_correlation_Z.pdf", out.type="cairo"))
+hmap(cor(ZL), zlim=c(-1, 1), col=cor.colors, margins=c(7, 7), 
+     cexRow=.8, cexCol=.8,
+     main="correlation of log-transformed z-scores")
+invisible(dev.copy2pdf(file="pdf_journal/stats_correlation_ZL.pdf", out.type="cairo"))
+```
+
+The correlations look reasonable.  An overall block structure is visible -- which presumably corresponds to the spoken-written dimension -- but the correlations within the blocks are fairly weak and the features are less directly linked to noun and verb frequency than in Biber's analysis.  
+
+# Serialize pre-processed data set
+
+We add word and sentence counts to the metadata table, so they can be used for filtering.
+
+```{r wordCountsToMeta}
+Meta[, word := Features$word]
+Meta[, sent := Features$sent]
+```
+
+And we create nicely readable labels for the features.
+
+```{r featureNames}
+feature.names <- 
+  gsub("_+", " ",
+       sub("_(\\pL)$", "/\\1", 
+           colnames(Z), perl=TRUE))
+cat(paste(feature.names, collapse=", "), "\n")
+```
+
+
+Finally, save all objects into a single `.rda` file.  We also provide a fixed (i.e. reproducible) random ordering index for plots.
+
+```{r saveRda}
+set.seed(42)
+rand.idx <- sample(nrow(Meta))
+save(Meta, rand.idx,
+     Features, M, Z, ZL,
+     types.variety, types.shortvar, types.mode, types.format,
+     types.textcat32, types.short32, types.code32,
+     types.textcat20, types.short20, types.code20,
+     types.textcat12, types.short12, types.code12,
+     rainbow.32, rainbow.20, rainbow.12, feature.names,
+     file="ice_preprocessed.rda")
+```

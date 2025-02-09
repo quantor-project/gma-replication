@@ -1,0 +1,715 @@
+---
+title: "Reproducing and Replicating Neumann & Evert (2021)"
+author: "Stephanie Evert & the QuanTOR team"
+date: "22 January 2025"
+always_allow_html: yes
+output:
+  html_document: 
+    fig_height: 7
+    fig_width: 7
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(dev.args=list(pointsize=12)) # adjust graphics device
+```
+
+```{r setupScript, include=FALSE, cache=FALSE}
+library(data.table)
+library(ggplot2)  # for modern-style lattice plots
+library(corpora)
+seaborn.pal <- corpora.palette("seaborn")
+muted.pal <- corpora.palette("muted")
+bright.pal <- corpora.palette("bright")
+simple.pal <- corpora.palette("simple")
+default.pal <- muted.pal
+```
+
+```{r utils, include=FALSE, cache=FALSE}
+## wrapper function for saving plots to PDF file
+save.pdf <- function (file, ..., out.dir="pdf_journal") {
+  if (!is.null(out.dir)) file <- sprintf("%s/%s", out.dir, file)
+  invisible(dev.copy2pdf(file=file, ..., out.type="cairo"))
+}
+```
+
+
+# Preliminaries
+
+## Introduction
+
+The main purpose of this notebook is to **replicate** the analysis of Neumann & Evert (2021) on register variation across three varieties of English (Hong Kong, Jamaica, New Zealand) as represented in the respective components of the International Corpus of English (ICE).  We carry out the same analysis on an extended data set covering nine ICE components (including GB and Ireland) in order to see how much results are changed by taking into account the additional six components.  Since we build on the pre-processed and annotated version of ICE available from the University of Zurich, linguistic features for the three components from the original study had to be extracted anew with modified queries.  In this sense our study also attempts to **reproduce** the original analysis from the same corpus data.
+
+For these reasons, we will use the same approach and parameter settings as Neumann & Evert (2021). This includes, in particular, the exclusion of short texts in pre-processing (see `prepare_data.Rmd`) and the use of log-transformed z-scores for all features in order to reduce the impact of outliers (resulting from skewed sparse frequency distributions) on the normality assumptions of the GMA methodology. In the following, we will primarily focus on a comparison between multivariate analyses based on the original three components and those based on all nine components.
+
+In this replication study, we use a recent object-oriented implementation of GMA made available in the R package `gmatools`. As this package has been written by the second author of Neumann & Evert (2021), the algorithms should be identical (or at least correspond closely) to those in their reproduction materials. The R package contains some additional functionality, though, which turned out to be useful for our replication study. As the package is still in an early experimental stage, it has to be installed directly from GitHub, using the `devtools` package. The code cell below has to be executed manually for safety reasons. It will only install the package if it is not already available in the system.
+
+```{r installGmatools, eval=FALSE}
+if (!requireNamespace("gmatools", quietly=TRUE)) {
+  devtools::install_github("schtepf/GMA/pkg/gmatools")
+}
+```
+
+Now we can load the `gmatools` package. All other R packages required by this notebook have already been loaded quietly and are not shown in the output.
+
+```{r loadGMA, cache=FALSE}
+library(gmatools)
+```
+
+As the documentation included in the `gmatools` package is somewhat incomplete and there is no user-friendly tutorial yet, the present notebook also gives some explanations on what different functions and methods do.
+
+## The extended ICE data set
+
+Load the preprocessed data set.
+
+```{r loadData, echo=1}
+var.names <- load("ice_preprocessed.rda")
+cat(paste(var.names, collapse=", "), "\n")
+```
+
+All metadata variables are already coded as factors with a sensible ordering of categories, so no further pre-processing is required here. The data set also includes rainbow colours for text categories and readable feature names. There are `r nrow(Meta)` texts and `r ncol(ZL)` features.  See `prepare_data.Rmd` for details about the distribution of metadata categories and text lengths.
+
+For our reproduction study (and for the comparative analysis in the replication), we will often want to work on a subset of the data set comprising only the three components from the original study (ICE-HK, ICE-JAM, ICE-NZ). We prepare a separate feature matrix and metadata table for this subset. We also add a new column to the metadata table indicating which texts belong to the old and new data set.
+
+```{r mkICE3}
+Meta[, subset := factor(
+  ifelse(Meta$shortvar %in% qw("HK JAM NZ"), "old", "new"), levels=qw("old new"))]
+idx3 <- which(Meta$subset == "old")
+ZL3 <- ZL[idx3, ]
+Meta3 <- droplevels(Meta[idx3, ])
+rand.idx3 <- na.omit(match(rand.idx, idx3)) # adjust rand.idx to subset
+```
+
+We refer to this subset as **ICE3** and to the complete data set as **ICE9**.
+
+## Dimensions of variation
+
+To get an overview of the main dimension of linguistic variation in our data set, we carry out an unsupervised PCA.  This is only done for the ICE3 data set: the replication for ICE9 will concentrate on the main analysis using weakly-supervised LDA dimensions.
+
+The `gmatools` implementation of GMA is based on [R6 objects](https://r6.r-lib.org/) of class `GMA`. A **GMA object** is initialised with the data set to be analysed and automatically carries out a PCA of the data set. We can obtain the PCA dimensions using the `projection()` method on the full GMA space (i.e. it returns the coordinates of the data set in PCA dimensions).
+
+```{r PCA}
+PCA <- GMA$new(ZL3)
+ZL3.pca <- PCA$projection(space="both")
+dim(ZL3.pca)
+```
+
+GMA's main approach to the visualisation of multi-dimensional data sets are **scatterplot matrices**, which work well for 3 to ca. 7 dimensions.  Here we show the first 4 PCA dimensions, i.e. an orthogonal, non-distorting perspective on the geometric configuration of the data set in the original feature space, which captures as much distance information (i.e. linguistic variation) as possible.
+
+The GMA tools provide a utility function `gma.pairs()` (a modification of the standard `pairs()` plot), which creates a compact display and makes it easy to highlight metadata categories in the plot. Note that we always save plots as PDF files for use in the associated journal paper (even though some might not be used in the end).
+
+```{r pairsType}
+gma.pairs(ZL3.pca, 1:4, Meta=Meta3, col=textcat20, pch=variety, 
+          pch.vals=1:9, col.vals=rainbow.20, 
+          cex=.4, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("ice3_pca4_type_pairs.pdf")
+```
+
+A large part of the linguistic variation captured by the first 4 PCA dimensions seems to be connected to register variation. Regions of this subspace correlate to a certain degree with ICE text categories, though the separation of text categories is far from perfect. The fourth PCA dimension shows little connection to the text categories -- if anything it appears to capture some of the outlier texts in the data set. Together, the 4 PCA dimensions account for `r round(sum(PCA$R2(dim=1:4)), 2)` % of the variance 
+
+## Scatterplot rows
+
+Neumann & Evert (2021, Fig. 1) use a special type of scatterplot matrix which only plots the first dimension against all other dimensions, but creates two rows for written and spoken mode. For direct comparison and readability in a published paper, this visualisation style seems to be most appropriate. We define a highly specialised function for this purpose, which has been extended with a few configuration options. In particular:
+
+- `col` specifies the metadata variable used to determine the colour of data points. Its default (20 mid-level text categories) can be changed, but `col.vals` will need to be adjusted accordingly.
+- `rows` specifies the metadata variable used to split the visualisation into rows; neither `col` nor `rows` may be disabled
+- optional `pch` specifies a metadata variable used to determine the plot symbols for data points
+- optional `lim` sets user-specified axis limits, either as a vector of length 2 (used for all dimensions) or as a two-column matrix specifying axis limits for each dimension of `dim`. Carefully chosen axis limits are often used to obtain an isometric visualisation (which cannot be guaranteed automatically).
+- optional `cols` specifies and additional metadata variable used to specify the visualisation into columns. In this case, each panel shows the same two dimensions and `dim` must have length 2.
+- optional `select` plots only a subset of the data set based on metadata constraint (evaluated in `Meta`)
+- `grid=TRUE` plots a grid in the background at integer coordinates (with slightly thicker lines at 0)
+
+```{r defScatterplotRows}
+scatterplot.rows <- function (M, dims, Meta, select=NULL,
+                              col="textcat20", pch=NULL, rows="mode", cols=NULL,
+                              col.vals=rainbow.20, pch.vals=1:10, grid=FALSE,
+                              cex=.8, legend.cex=1.5*cex, randomize=TRUE, lim=NULL, dim.string="Dim %d", ...) {
+  nR <- nrow(M)
+  n.dim <- length(dims)
+  stopifnot(n.dim >= 2)
+  if (!all(dims %in% seq_len(ncol(M)))) stop("invalid dimensions selected")
+  
+  if (nrow(Meta) != nR) stop("metadata table Meta= doesn't match data matrix M=")
+  select.expr <- substitute(select)
+  select <- eval(select.expr, Meta, parent.frame())
+  if (!is.null(select)) {
+    if (!is.logical(select)) stop("select= must be a Boolean expression selecting the desired items")
+    M <- M[select, , drop=FALSE]
+    Meta <- Meta[select, , drop=FALSE]
+    nR <- nrow(M)
+  }
+  
+  if (!is.null(lim)) {
+    if (is.matrix(lim)) {
+      if (nrow(lim) != n.dim || ncol(lim) != 2) stop(sprintf("lim= must be a %d x 2 matrix or a vector c(min, max)", n.dim))
+    }
+    else {
+      if (length(lim) != 2) stop(sprintf("lim= must be a %d x 2 matrix or a vector c(min, max)", n.dim))
+      lim <- cbind(rep(lim[1], n.dim), rep(lim[2], n.dim))
+    }
+  }
+  else {
+    lim <- t(apply(M[, dims, drop=FALSE], 2, expand.range, by=.05))
+  }
+  
+  if (randomize) {
+    if (is.numeric(randomize)) set.seed(randomize)
+    idx <- sample.int(nR)
+    M <- M[idx, , drop=FALSE]
+    Meta <- Meta[idx, , drop=FALSE]
+  }
+  
+  if (!is.null(pch)) pch.vec <- pch.vals[ Meta[[pch]] ] else pch.vec <- rep(1, nrow(M))
+  col.cat <-as.factor(Meta[[col]])
+  col.levels <- levels(col.cat)
+  col.vec <- col.vals[col.cat]
+  
+  plot.panel <- function (d, idx, xlab="", ylab="") {
+    xlim <- lim[d, ]
+    ylim <- lim[1, ]
+    w <- c(0.01, 0.99) # 1% inset from border
+    plot(0, 0, type="n", xlim=xlim, ylim=ylim,
+         xlab="", ylab="", main="", xaxt="n", yaxt="n")
+    if (grid) {
+      abline(v=round(xlim[1]):round(xlim[2]), col="lightgrey")
+      abline(h=round(ylim[1]):round(ylim[2]), col="lightgrey")
+      abline(h=0, v=0, lwd=2, col="lightgrey")
+    }
+    points(M[idx, dims[d]], M[idx, dims[1]],
+         pch=pch.vec[idx], col=col.vec[idx], cex=cex)
+    text(mean(xlim), sum(ylim * w), xlab, cex=legend.cex, font=2)
+    text(sum(xlim * rev(w)), mean(ylim), ylab, cex=legend.cex, srt=90, font=2)
+  }
+  
+  rows.vec <- droplevels(as.factor(Meta[[rows]]))
+  rows.levels <- levels(rows.vec)
+  n.rows <- length(rows.levels)
+  
+  if (!is.null(cols)) {
+    if (n.dim != 2) stop("dim= must select exactly 2 dimensions if cols= is specified")
+    cols.vec <- droplevels(as.factor(Meta[[cols]]))
+    cols.levels <- levels(cols.vec)
+    n.cols <- length(cols.levels)
+  }
+  else {
+    n.cols <- n.dim - 1
+  }
+  
+  par(mfrow=c(n.rows, n.cols + 1), mar=c(0, 0, 0, 0)+.2)
+  for (i in seq_len(n.rows)) {
+    idx.row <- rows.vec == rows.levels[i]
+    colvals.row <- unique(col.cat[idx.row])
+    idx.levels <- col.levels %in% colvals.row
+    
+    if (!is.null(cols)) {
+      for (j in seq_len(n.cols)) {
+        xlab <- if (i == 1) cols.levels[j] else if (i == 2 && j == 1) sprintf(dim.string, dims[2]) else ""
+        ylab <- if (j == 1) sprintf(dim.string, dims[1]) else ""
+        idx.cell <- idx.row & (cols.vec == cols.levels[j])
+        plot.panel(2, idx.cell, xlab=xlab, ylab=ylab)
+      }
+    } 
+    else {
+      for (j in 2:n.dim) {
+        xlab <- if (i == 1) sprintf(dim.string, dims[j]) else ""
+        ylab <- if (j == 2) sprintf(dim.string, dims[1]) else ""
+        plot.panel(j, idx.row, xlab=xlab, ylab=ylab)
+      }
+    }
+      
+    plot(0, 0, type="n", ann=FALSE, bty="n", xaxt="n", yaxt="n")
+    legend(0, 0, xjust=0.5, yjust=0.5, cex=legend.cex,
+       title=rows.levels[i], bty="n",
+       legend=col.levels[idx.levels], 
+       fill=col.vals[idx.levels], border=col.vals[idx.levels])
+  }
+}
+```
+
+We can now create a version of the PCA plot that corresponds to the LDA visualisation of Neumann & Evert (2021).
+
+```{r rowPairsType}
+scatterplot.rows(ZL3.pca, 1:4, Meta3, pch="variety", dim.string="PCA %d")
+save.pdf("ice3_pca4_type.pdf", width=12, height=8)
+```
+
+
+# The LDA space of text categories
+
+The main goal of Neumann & Evert (2021) was to study the interaction between language varieties and register variation. In order to draw meaningful conclusions, we need a clearly interpretable and well-structured **register space**. While we might try to interpret the first 3 PCA dimensions as dimensions of register variation (in a Biberian approach), coming up with clear and empirically well-founded intepretations can be challenging. Moreover, we cannot be sure that these dimensions primarily capture register variation rather than other aspects such as individual stylistic choices. Finally, the PCA space lacks visual structure: the data set is a nearly spherical blob structured only by colour-coding text categories. If there is indeed structure in the geometric configuration of the data set -- a fundamental assumption of GMA -- the PCA fails to recover it. 
+
+This is where the weakly-supervised intervention central to GMA comes in. Following Neumann & Evert (2021), we use supervised LDA (linear discriminant analysis) to create a register space based on the ICE text categories. The crucial advantages are that the resulting latent dimensions focus on the aspects of register variation captured by text categories (minimising the impact of any other factors of linguistic variation), and that the well-separated text categories provide a viusal map of the register space that helps us interpret our observations.
+
+## GMA objects
+
+As has been pointed out before, a GMA object is initialised with a data set that determines the dimensionality of the original feature space and that is its main object of analysis (though we can use the GMA object with other data points as well).  At its core, GMA decomposes the feature space into a **focus space** and its orthogonal **complement**. The dimensions of the focus space are usually determined by a weakly-supervised analysis of the data set, but can also be defined manually or copied from another GMA object. GMA objects use orthonormal basis vectors for both focus and complement space, in order to enable orthogonal, geometry-preserving projections. The basis vectors of the complement space are determined by a PCA of the internal data set (projected into the complement space), so that the first complement dimensions capture as much of the remaining variation as possible. When a GMA object is first initialised, its focus space is empty (0-dimensional), so the complement space contains a full PCA of the data set -- a fact that we exploited in the previous section.
+
+Throughout this notebook, we want to compare the LDA register space for the ICE3 subset (which should reproduce the study of Neumann & Evert 2021) with an LDA register space based on the complete ICE9 data set. For this purpose, we need two separate GMA objects initialised with the ICE3 and ICE9 data sets, respectively.
+
+```{r GMAobjects}
+ICE3 <- GMA$new(ZL3)
+print(ICE3)
+ICE9 <- GMA$new(ZL)
+print(ICE9)
+```
+
+One important thing to keep in mind that the GMA tools use R6 reference classes, so that GMA objects are modified in place (in contrast to most other R objects such as data frames, with the notable exception of `data.table`s). For this reason, we will later need to clone our objects in order to compare different focus spaces for the same data set.
+
+## Reproducing Neumann & Evert (2021)
+
+Our first step is to reproduce the analysis of Neumann & Evert (2021) with our ICE3 data set (which is a recreation of their data). First, we perform an LDA based on ICE text categories (using the same intermediate-level 20-category system as in our visualisations).
+
+```{r reproLDA}
+lda.textcat <- ICE3$discriminant(Meta3$textcat20)
+dim(lda.textcat)
+```
+
+The LDA has needed 19 dimensions for an optimal separation of the 20 text categories (in contrast to other LDA applications that sometimes achieve separation with many fewer dimensions than categories). Of course, reducing our 41-dimensional feature space to a 19-dimensional focus space is of little use. We will thus focus on the first few dimensions of the LDA instead. 
+
+Neumann & Evert (2021: 155) settle on the first 4 dimensions, which allow a separation of the text categories with 60% accuracy (using an SVM classifier with 5-fold cross-validation), compared to 72.6% accuracy in all 19 dimensions. This shows that the reduction of the register space to 4 dimensions does not discard much structure and we should still be able to clearly make out regions corresponding to the different text categories.
+
+For our reproduction, we simply follow the decision of Neumann & Evert (2021). We might later also apply SVM classifiers to different subsets of the LDA dimensions or determine pairwise discrimination of text categories.
+
+We use the `add()` method to add the first four LDA dimensions to the focus space of the GMA object. Note that the LDA axis vectors are neither orthogonal nor normalised to unit length (since they actually represent discriminants rather than dimensions).
+
+```{r reproLDAnotOrthogonal}
+round(crossprod(lda.textcat[, 1:4]), 3)
+```
+
+The GMA object automatically determines an orthonormal basis of the new focus space such that the first $k$ basis vectors span the same subspace as the first $k$ LDA axis vectors.
+
+```{r reproAddLDA}
+ICE3$add(lda.textcat[, 1:4])
+print(ICE3)
+```
+
+```{r reproGMAbasisIsOrthogonal}
+round(crossprod(ICE3$basis("focus")), 3)
+```
+
+Now we can visualise the ICE3 data set in the LDA register space as a scatterplot matrix. The coordinates to be plotted are the projections of the data points into the focus space of the GMA object.
+
+```{r reproLDApairsRaw}
+ICE3.X <- ICE3$projection("focus")
+gma.pairs(ICE3.X, 1:4, Meta=Meta3, col=textcat20, pch=variety, 
+          col.vals=rainbow.20, 
+          cex=.4, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("ice3_lda_raw_type_pairs.pdf")
+```
+
+This is indeed a nicely structured register space, assigning text categories to different regions and arranging related categories next to each other. It is thus very plausible as a linguistically interpretable basis space for our further analysis.
+
+It is unfortunate that the striking double banana shape (dare I call it “phallic”?) doesn't line up nicely with the dimensions of our focus space. For such situation, the `gmatools` package extends GMA with the option of performing **rotations** in (some dimensions of) the focus space. Unlike the “rotations” of factor analysis, only true rotations of the coordinate system, i.e. isometric linear maps. Here we apply a “varimax” style rotation to the first two dimensions (by performing a PCA in those two dimensions), aligning the bananas with the first dimension.
+
+```{r reproLDArotation}
+ICE3$rotation("pca", dim=1:2)
+```
+
+Now the scatterplot matrix visually matches the results of Neumann & Evert (2021) very well, nicely reproducing their result.
+
+```{r reproLDApairs}
+ICE3.X <- ICE3$projection("focus")
+gma.pairs(ICE3.X, 1:4, Meta=Meta3, col=textcat20, pch=variety, 
+          col.vals=rainbow.20,
+          cex=.4, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("ice3_lda_type_pairs.pdf")
+```
+
+We can now visualise scatterplot rows matching Neumann & Evert (2021, Fig. 1), using suitable fixed axis ranges for each dimension. We start from the ranges used in the original paper, but might need to adjust them in order to accommodate the ICE9 register space of the replication study. Since each panel has a 4:3 aspect ratio in the PDF plot, we have to choose suitable ranges to ensure an isometric display.  
+
+```{r reproLDArowScatter}
+axis.lim <- matrix(c(-3.1, 2.5,  -2.0, 2.2,  -2.0, 2.2,  -2.0, 2.2),
+                   ncol=2, byrow=TRUE)
+scatterplot.rows(ICE3.X, 1:4, Meta3, pch="variety", pch.vals=c(1, 3, 4), lim=axis.lim)
+save.pdf("ice3_lda_type.pdf", width=12, height=8)
+```
+
+Finally, are there differences between language varieties in the register space, i.e. do registers differ between the three varieties? We investigate this question first by using different colours to highlight the three language varieties rather than text categories.
+
+```{r reproLDAvarRowScatter}
+scatterplot.rows(ICE3.X, 1:4, Meta3, col="variety", col.vals=simple.pal, lim=axis.lim)
+save.pdf("ice3_lda_var.pdf", width=12, height=8)
+```
+
+An alternative is to focus on the first two dimensions (showing the most interesting geometric structure) and put separate scatterplots for the three varieties side by side. Since we can now use colours to highlight text categories again, this gives a better picture on register-related divergences between the varieties.
+
+```{r reproLDAtypeByVar}
+scatterplot.rows(ICE3.X, 1:2, Meta3, pch="variety", cols="variety",
+                 pch.vals=c(1, 3, 4), lim=axis.lim[1:2,], grid=TRUE)
+save.pdf("ice3_lda_type_by_var.pdf", width=12, height=8)
+```
+
+In order to determine how much of the linguistic variation in our data set is captured by the four dimensions of our focus space, we can determine the proportion $R^2$ of variance (= squared distance information) that is preserved in the orthogonal projection. The `R2()` method returns the precentage for each dimension of the focus space, and we can add some PCA dimensions from the complement space for comparison.
+
+```{r reproR2}
+ICE3$R2(dim=1:8)
+```
+
+The total $R^2$ is of the focus space is only `r round(sum(ICE3$R2()), 2)`%.  Let us include three complement dimensions in the visualisation to add perspective.
+
+```{r reproPairsWithComplement}
+tmp <- ICE3$projection("both")
+gma.pairs(tmp, 1:7, Meta=Meta3, col=textcat20, pch=variety, 
+          col.vals=rainbow.20, 
+          cex=.2, legend.cex=.35, iso=TRUE, compact=TRUE)
+save.pdf("ice3_lda_type_with_pca.pdf", width=12, height=9)
+```
+
+The rightmost three columns of the plot show the first PCA dimensions from the complement space. It is evident that PC1 is correlated with our first focus dimension, but also captures substantial amounts of variation within each text category. PC2 also helps to separate certain text categories, but provides as less clear-cut separation than the focus space dimensions overall. PC3 appears to capture a substantial amount of variation that is not directly related to text categories and might be connected with individual style or to topic.
+
+Neumann & Evert (2021) label the dimensions of the focus space as **conceptual speaking vs. conceptual writing** (LDA dim 1), **dialogic written vs. neutral** (LDA dim 2), **descriptive-narrative vs. instructive-regulative** (LDA dim 3), and **neutral vs. online production** (LDA dim 4). Their interpretation is based on the visual reference system created by the positions of different text categories within the focus space, combined with feature weights of the LDA dimensions (which are Biber's main entry point for interpretation). The barplots below show feature weights for the three dimensions, given by the coordinates of the orthogonal basis vectors. The barplot only shows features $i$ that have a substantial weight $|p_{ij}| \geq .1$ in at least one dimension $j$.  Keep in mind that feature weights are relative within each basis vector (because $\|\mathbf{p}_{\bullet j}\|_2 = 1$); a discriminant characterised by consistently large values of many different features would assign relatively low weights to all of them.
+
+Since the original paper uses an adapted colour scale for each plot, leading to more saturated colours than our common scale for all four dimensions, we need the new `zlim` option to enforce a scale that looks sufficiently similar to all barplots to allow for easy direct comparison.
+
+```{r reproLDAweights}
+ICE3.P <- ICE3$basis("focus")
+idx.weights <- apply(abs(ICE3.P), 1, max) >= .1 # only show features with substantial weight
+gma.plot.weights(ICE3.P, dim=1:4, feature.names=feature.names, names=paste("LDA dim", 1:4), 
+                 idx=idx.weights, ylim=c(-.75, .45), zlim=c(-.4, .4))
+save.pdf("ice3_lda_weights.pdf", width=8, height=7)
+```
+
+These plots look quite similar to the ones shown in Neumann & Evert (2021), though there are some noticeable differences -- our replication is close to the previous study, but not quite the same. Overall feature weights are distributed somewhat more equally, but some changes might lead to a subtly different linguistic interpretation of the dimensions.
+
+Neumann & Evert (2021, Fig. 4) complement their interpretation by looking at the contribution of different features to the discriminant scores of text categories, which Evert & Neumann (2017) insist on to avoid misinterpretation of feature weights. The numerous comparisons of different categories for each LDA dimensions are only made possible by an interactive Web app, so we do not include this step in our replication experiment.
+
+
+# Extending the corpus
+
+We now extend the analysis to our full ICE corpus covering 9 language varieties.  This can be done in two ways:
+
+1. Project texts from the additional 6 language varieties into the focus space determined on ICE3. This is a very limited form of replication, which tests only whether the observations made in the original study were specific to the 3 selected varieties or representative of more general patterns.
+2. Carry out an LDA on the full ICE9 corpus to determine a new focus space. This is a more challenging replication study as the LDA is carried out on an extended data set and might result in a substantially different latent space. It is still less demanding than a replication on an entirely different data set of on a different selection of linguistic features.
+
+Depending on which approach we take, different comparisons will be of interest, such as
+
+- coordinates of the “new” varieties vs. those of the “old” varieties in the ICE3 focus space
+- coordinates of the “old” (or “new”) varieties in the ICE3 vs. ICE9 focus space
+- orthogonal basis dimensions of the ICE3 vs. ICE9 focus space
+
+Since our main focus here is on differences between language varieties and on the efffects of including additional varieties in the LDA analysis, we use colour coding to represent the ICE components in our first overview plots. Text categories are not highlighted at all at this point, but plot symbols differentiate between spoken and written language.
+
+## Adding texts to the ICE3 focus space
+
+We can apply the ICE3 orthogonal projection also to new data, allowing us to obtain projection coordinates in the ICE3 focus space for all texts. The coordinates of ICE3 texts in the new projection should be identical to their original coordinates (`ICE3.X`).
+
+```{r projectICE9}
+ICE3.X9 <- ICE3$projection("focus", M=ICE9$data)
+stopifnot(all.equal(ICE3.X, ICE3.X9[idx3, ]))
+```
+
+We can now visualise both sets of texts in this focus space. We also re-create the plot for the ICE3 varieties for direct comparison.
+
+```{r projectPairsVariety}
+gma.pairs(ICE3.X9, 1:4, Meta=Meta, select=idx3,
+          col=variety, col.vals=simple.pal,
+          pch=mode, pch.vals=c(1, 3),
+          cex=.4, legend.cex=.8, lim=c(-3.25, 2.75), compact=TRUE)
+gma.pairs(ICE3.X9, 1:4, Meta=Meta, 
+          col=variety, col.vals=simple.pal,
+          pch=mode, pch.vals=c(1, 3),
+          cex=.4, legend.cex=.8, lim=c(-3.25, 2.75), compact=TRUE)
+```
+
+There isn't much difference between the six additional varieties and the ICE3 texts: they nicely fill in the shape sketched by the original data set. A few noticeable shifts remain for Hong Kong and India (top left panel) and for Ireland (top centre panel), all on the conceptual speaking end of the first dimension.
+
+Highlighting just ICE3 vs. other varieties might help pick out smaller differences between the old and new texts more clearly. In order to balance the colours, we divide texts into 3 groups: ICE3, West and Asia.
+
+```{r groupVarieties}
+Meta[, group := factor(
+  ifelse(subset == "old", "ICE3",
+         ifelse(shortvar %in% qw("GB IRE CAN"), "West", "Asia")),
+  levels = qw("ICE3 West Asia"))]
+Meta[, table(group, shortvar)]
+```
+
+There aren't any striking differences between the three groups of varieties, except for some small local regionsthat seem to be dominated by one of the groups.
+
+```{r projectPairsGroup}
+gma.pairs(ICE3.X9, 1:4, Meta=Meta, 
+          col=group, col.vals=simple.pal,
+          pch=mode, pch.vals=c(1, 3),
+          cex=.3, legend.cex=1, lim=c(-3.25, 2.75), compact=TRUE)
+save.pdf("ice3_lda_ice9_group_pairs.pdf")
+```
+
+For the paper, the overview scatterplot matrices above are not considered sufficiently readable and intuitive. Hence we create scatterplot rows for the the first two LDA dimensions across all nine varieties. As above, we show three varieties each in a single display, divided into the ICE3 varieties, Western varieties, and Asian varieties. Note that we have already saved the first of these plots to a PDF file above. It is repeated here so that we can easily switch between all three displays in the interactive notebook.
+
+```{r projectTypeByVar}
+scatterplot.rows(ICE3.X9, 1:2, Meta, pch="variety", cols="variety", select=(group == "ICE3"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim[1:2,], grid=TRUE)
+scatterplot.rows(ICE3.X9, 1:2, Meta, pch="variety", cols="variety", select=(group == "West"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim[1:2,], grid=TRUE)
+save.pdf("ice3_lda_ice9_type_by_var_west.pdf", width=12, height=8)
+scatterplot.rows(ICE3.X9, 1:2, Meta, pch="variety", cols="variety", select=(group == "Asia"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim[1:2,], grid=TRUE)
+save.pdf("ice3_lda_ice9_type_by_var_asia.pdf", width=12, height=8)
+```
+
+## Comparison with the ICE9 focus space
+
+Having found no striking differences between the three language varieties investigated by Neumann & Evert (2021) and the other six varieties in the ICE9 corpus, we now look at the LDA focus space itself and to what extent it is a product of their choice of varieties.
+
+For this purpose, we create a new LDA focus space based on all texts from the ICE9 corpus. The `add.discriminant()` method provides a convenient shortcut. **Warning:** Executing this call more than once will keep adding four LDA dimensions at a time to the focus space. In order to prevent such mistakes, we re-initialise the `ICE9` object first (unfortunately, there is no method yet for _dropping_ focus dimensions).
+
+```{r ice9LDA}
+ICE9 <- GMA$new(ZL)
+ICE9$add.discriminant(Meta$textcat20, max.dim=4)
+ICE9
+```
+
+Keeping in mind the importance that GMA places on visualisation, we should look at a scatterplot matrix before carrying out further steps (such as applying a rotation). In order to avoid code duplication, this notebook shows the scatterplot only after all steps have been completed, but you can skip down and execute the cell now in order to confirm that the LDA has worked as intended.
+
+```{r ice9Rotation}
+ICE9$rotation("pca", dim=1:2)
+ICE9$rotation("flip", dim=2)
+```
+
+The visualisation shows that after PCA rotation, the left and right sides of the second dimension are flipped compared to the original analysis. We correct this manually to make the two spaces as comparable as possible. We also check how much of the variation between texts is captured by our focus space.
+
+```{r ice9R2}
+ICE9$R2()
+```
+
+```{r ice9LDApairs}
+ICE9.X <- ICE9$projection("focus")
+gma.pairs(ICE9.X, 1:4, Meta=Meta, col=textcat20, pch=group, 
+          col.vals=rainbow.20,
+          cex=.2, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("ice9_lda_type_pairs.pdf")
+```
+
+While the first two dimensions appear to be quite similar to those of the ICE3 focus space, the visual impression of the third dimension especially is entirely different. In order to allow for a clearer comparison in the paper, we show only the original ICE3 components and the first row of the scatterplot matrix split into written and spoken texts. (In the notebook, we also plot the other two groups of varieties as overlays.)
+
+```{r reproLDArowScatterICE9}
+scatterplot.rows(ICE9.X, 1:4, Meta, pch="variety", select=(group == "ICE3"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim)
+save.pdf("ice9_lda_type_ice3.pdf", width=12, height=8)
+scatterplot.rows(ICE9.X, 1:4, Meta, pch="variety", select=(group == "West"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim)
+scatterplot.rows(ICE9.X, 1:4, Meta, pch="variety", select=(group == "Asia"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim)
+```
+
+Our first impression is thus that the new LDA focus space is markedly different from the one in our replication experiment. While the first two dimensions appear to be stable, further dimensions strongly depend on the language varieties included. The dimensions weights also suggest a similar interpretation for LDA dim 1 and 2, but point into an entirely different direction for LDA dim 3.
+
+```{r ice9LDAweights}
+ICE9.P <- ICE9$basis("focus")
+idx.weights <- apply(abs(ICE9.P), 1, max) >= .1 # only show features with substantial weight
+gma.plot.weights(ICE9.P, dim=1:4, feature.names=feature.names, names=paste("LDA dim", 1:4),
+                 idx=idx.weights, ylim=c(-.75, .45), zlim=c(-.4, .4))
+save.pdf("ice9_lda_weights.pdf", width=8, height=7)
+```
+
+To confirm this impression, we need a **quantitative criterion** for the similarity or dissimilarity of the two focus spaces. Evert & Neumann (2017) had an easy solution for their one-dimensional focus spaces, using the angle between the single basis vectors of different focus spaces as a simple and intuitive measure. The `gmatools` package includes a more general measure of **subspace similarity** $\text{Sim}_1$ that can be interpreted as the (fractional) number of shared dimensions between the two spaces. Some concrete examples of possible results for the comparison of four-dimensional subspaces A and B might help get a more intuitive grasp of the measure:
+
+- $\text{Sim}_1 = 4$ means that A and B are identical (because they share all 4 dimensions).
+- $\text{Sim}_1 = 3$ is the case if A and B share 3 dimensions, while their fourth dimensions are orthogonal to each other. Note that sharing dimensions doesn't mean that the orthogonal basis vectors must be identical to begin with: it might be necessary to apply rotations in both space to match up basis vectors.
+- $\text{Sim}_1 = 3.87$ is the case if A and B share 3 dimensions, but their fourth dimensions are oblique at an angle of ca. 30 degrees (because $\cos 30^{\circ} \approx .87$). It is also the case if A and B share 2 dimensions, while their third and fourth dimensions are oblique at an angle of 21 degrees, respectively (because $2\cdot \cos 21^{\circ} \approx 1.87$).
+- $\text{Sim}_1 = 3$ is thus also the case if A and B share only two dimensions, while their third and fourth dimensions are oblique at an angle of 60 degrees (because $\cos 60^{\circ} = \frac12$).
+
+The `similarity()` method is a convenient way to compute the subspace similarity between two focus spaces.
+
+```{r ice9LDAsim}
+ICE9$similarity(ICE3)
+```
+
+The relatively high similarity value suggests that the two focus spaces might be more alike than our visualisation above suggests. We can also decompose the similarity value into components for shared and oblique dimensions.
+
+```{r ice9LDAsimDetails}
+tmp <- ICE9$similarity(ICE3, method="sigma")
+data.frame(sim=tmp, angle=acos(tmp) * 180 / pi, 
+           row.names=sprintf("aligned dim %d", 1:4))
+```
+
+In line with our visual impression, two dimensions are very close to the original analysis, while the other two dimensions are oblique at close to 30 degrees. Note that the dimensions shown here do not necessarily correspond to the dimensions of either focus space, but represent two optimally aligned sets of basis vectors in the two GMA spaces.
+
+Apparently, the ICE3 and ICE9 focus spaces are more similar than our visualisation has made us believe. It would seem that further **rotations** of the ICE9 basis are needed in order to bring out the visual similarity. The first two dimensions already match quite well, so the additional rotation will mostly affect LDA dim 3 and 4. Even in the 3-dimensional plots, it is difficult to guess exactly which rotation is called for -- and finding it by trial and error is at best a tedious process. Fortunately, `gmatools` offers functionality to rotate the focus space basis automatically until the best possible match with the ICE3 basis is achieved. This is referred to as a **manual** rotation because the basis is rotated to match user-specified axis vectors. Conveniently, we can directly specify the ICE3 basis, which is then automatically projected into the ICE9 focus space and re-orthogonalised.
+
+```{r ice9LDAmatch}
+ICE9$rotation("manual", basis=ICE3, debug=TRUE)
+```
+
+Notice that the second dimensions of the two focus spaces appear to correspond more closely to one another than the first dimensions (so they require a smaller rotation angle to become aligned). The scatterplot matrix now reveals a picture that looks much more familiar from the ICE3 analysis.
+
+```{r ice9LDAmatchedPairs}
+ICE9.X <- ICE9$projection("focus")
+gma.pairs(ICE9.X, 1:4, Meta=Meta, col=textcat20, pch=group, 
+          col.vals=rainbow.20,
+          cex=.4, legend.cex=.7, iso=TRUE, compact=TRUE)
+save.pdf("ice9_ldamatch_type_pairs.pdf")
+```
+
+Again we show the scatterplots in the first row separately for the ICE3 varieties (and the other two groups as overlays), split into written and spoken texts.
+
+```{r reproLDArowScatterICE9rotated}
+scatterplot.rows(ICE9.X, 1:4, Meta, pch="variety", select=(group == "ICE3"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim)
+save.pdf("ice9_ldamatch_type_ice3.pdf", width=12, height=8)
+scatterplot.rows(ICE9.X, 1:4, Meta, pch="variety", select=(group == "West"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim)
+scatterplot.rows(ICE9.X, 1:4, Meta, pch="variety", select=(group == "Asia"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim)
+```
+
+We also visualise feature weights after the alignment rotation.
+
+```{r ice9LDAweightsRotated}
+ICE9.P <- ICE9$basis("focus")
+idx.weights <- apply(abs(ICE9.P), 1, max) >= .1 # only show features with substantial weight
+gma.plot.weights(ICE9.P, dim=1:4, feature.names=feature.names, names=paste("LDA dim", 1:4),
+                 idx=idx.weights, ylim=c(-.75, .45), zlim=c(-.4, .4))
+save.pdf("ice9_ldamatch_weights.pdf", width=8, height=7)
+```
+
+Finally, we take a look at differences between the three sets of language varieties in the new matching perspective.
+
+```{r iceLDAtypeByVar}
+scatterplot.rows(ICE9.X, 1:2, Meta, pch="variety", cols="variety", select=(group == "ICE3"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim[1:2,], grid=TRUE)
+save.pdf("ice9_ldamatch_type_by_var_ice3.pdf", width=12, height=8)
+scatterplot.rows(ICE9.X, 1:2, Meta, pch="variety", cols="variety", select=(group == "West"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim[1:2,], grid=TRUE)
+save.pdf("ice9_ldamatch_type_by_var_west.pdf", width=12, height=8)
+scatterplot.rows(ICE9.X, 1:2, Meta, pch="variety", cols="variety", select=(group == "Asia"),
+                 pch.vals=rep(c(1, 3, 4), 3), lim=axis.lim[1:2,], grid=TRUE)
+save.pdf("ice9_ldamatch_type_by_var_asia.pdf", width=12, height=8)
+```
+
+Observations are very much in line with the previous analyses, which is very reassuring. Interestingly, differences between the varieties seem slightly less pronounced now, perhaps because the LDA across all 9 varieties aims to factor out any differences between varieties within the same text category.
+
+# Making sense of latent dimensions
+
+## Close reading
+
+Interpretation of feature weights is difficult and can be misleading (cf. the discussion in Neumann & Evert 2021). One possibility is close reading of some texts in selected areas of the focus space. In order to select suitable texts, we need their coordinates (available in our focus space projection matrix `ICE9.X`) and metadata (so we can e.g. select extreme texts from specific categories).
+
+For example, we can select the most extreme examples of conceptual speaking at the negative end of dimension 1. A suitable threshold can be gleaned from the scatterplots above or from the distribution summaries for each dimension. We index samples by text ID so it's easier to work with subsets of the data.
+
+```{r chooseSample1}
+summary(ICE9.X)
+sample1 <- ICE9.X[, 1] < -3.2
+sample1 <- rownames(ICE9.X)[sample1]
+ICE9.X[sample1, ]
+```
+
+We might take a closer look at `icegb_s1a-095_2`, which needs to be obtained from the original ICE corpus. Its detailed metdata are shown in the first row of the table below.
+
+```{r metaSample1}
+text1 <- "icegb_s1a-095_2"
+Meta[sample1, ]
+```
+
+In order to make sense of individual features of such a text, we want to know (i) whether some features are individually extreme and, more importantly, (ii) to what extent they contribute to the position of the text along dimension 1 (i.e. which features “push” the text to the negative end of the dimension).
+
+We obtain the contributions of individual features to the position of each text in dimension 1 by multiplying the standardised feature vectors with the dimension weights (i.e. the coordinates of its basis vector). We can sort the vector to highlight features with the largest contributions (which also stand out in close reading of the text).
+
+```{r contribDim1}
+w1 <- ICE9.P[, 1] # feature weights in dim 1
+ICE9.Contrib1 <- gmatools:::.scaleMargins(ZL, cols=w1) # gmatools has a hidden internal function for scaling columns of a matrix
+colnames(ICE9.Contrib1) <- paste(colnames(ZL), ifelse(w1 < 0, " ↓", ""), sep="")
+tmp <- sort(ICE9.Contrib1[text1, ])
+tmp
+sum(tmp[c(3,5,7)]) # features relating to 1st/2nd person pronouns
+sum(tmp[1:8]) # total contribution of features explicitly mentioned in the paper
+```
+
+A complementary perspective is how the feature contributions compare to other texts (for the same feature). Our close-reading interpretation suggested that the chosen text is quite extreme in its use of spoken-language features (viz. the first 8 features in the sorted vector above). We confirm this by determining the quantiles corresponding to the dimension score contributions of these features. For example, we find that the selected text is among the 2% of texts with highest proportion of discourse markers in sentence-initial position; among ca. 10% of highest proportions of first and second person pronouns; and among the 1% of texts with shortest sentence length and lowest lexical density. Note that whether the quantiles correspond to the lowest or highest feature values cannot be seen directly from the contributions: the signs of the corresponding feature weights have to be taken into account (with negative weights marked ↓ in the labels).
+
+```{r contribQuantilesDim1}
+feature.quantiles <- function (M, groups=NULL) {
+  if (is.null(groups)) {
+    Q <- apply(M, 2, function (x) rank(x) / length(x))
+    rownames(Q) <- rownames(M)
+  }
+  else {
+    stopifnot(length(groups) == nrow(M))
+    groups <- as.factor(groups)
+    Q <- M
+    for (l in levels(groups)) {
+      idx <- groups == l
+      Q[idx, ] <- feature.quantiles(M[idx, , drop=FALSE])
+    }
+  }
+  Q
+}
+ICE9.Quant1 <- feature.quantiles(ICE9.Contrib1)
+ICE9.Quant1[text1, ][order(ICE9.Contrib1[text1, ])] # show in same order as contributions above
+```
+
+Let us now look at the opposite extreme of the dimension, which characterises conceptual writing. Rather than taking the most extreme written registers, it might be instructive to look at spoken texts with large positive dimension scores (which aren't all that far away from the overall maximum of `r max(ICE9.X[,1])`).
+
+```{r chooseSample2}
+idx <- Meta$mode == "spoken"
+sample2 <- rank(-ICE9.X[idx, 1]) <= 10 # spoken texts with 10 highest dimension scores
+sample2 <- rownames(ICE9.X)[idx][sample2] # corresponding text IDs 
+cbind(LDA1=ICE9.X[sample2, 1], Meta[sample2, ])
+```
+
+We select the only text from ICE-GB in this sample (`icegb_s2a-033_1`), which is identified as an unscripted speech (while the other texts are scripted broadcast news and talks). This should make for a particularly enlightening comparison with the phone call above.
+
+```{r chooseText2}
+text2 <- "icegb_s2a-033_1"
+```
+
+We already have computed feature contributions and quantiles for this dimension, which we can reuse for the text at hand.
+
+```{r contribText2}
+tmp <- sort(ICE9.Contrib1[text2, ], decreasing=TRUE)
+tmp
+sum(tmp[c(3,5,6,10)]) # features relating to personal pronouns
+sum(tmp[1:10]) # total contribution of features
+sum(tmp[tmp < 0]) # pushback from negative contributions
+```
+
+The contributions are less concentrated and spread over a large number of features. The first 10 features still push the text quite far to the positive end of the dimension. Note that there are also a considerable number of features with negative contributions (i.e. indicators of conceptual speaking), but their total contribution is relatively small. The corresponding quantiles will be much less extreme than before because they are calculated across all texts rather than just the spoken texts.
+
+```{r contribQuantilesText2}
+ICE9.Quant1[text2, ][order(-ICE9.Contrib1[text2, ])]
+```
+
+We can also determine separate quantiles for spoken and written texts, which are considerably more extreme for our chosen text (as expected).
+
+```{r contribQuantilesByModeText2}
+ICE9.Quant1Mode <- feature.quantiles(ICE9.Contrib1, Meta$mode)
+ICE9.Quant1Mode[text2, ][order(-ICE9.Contrib1[text2, ])]
+```
+
+Finally, let us look at the written text categories of _creative writing_  and _social letters_, which extend far down into the conceptually spoken range of LDA dimension 1. This is very plausible linguistically, but there is a lot of variability and especially _creative writing_ also extends far into the positive (conceptually written) range.
+
+```{r rangeCreativeWritingDim1}
+summary(ICE9.X[Meta$textcat20 == "creative writing", 1])
+summary(ICE9.X[Meta$textcat20 == "social letters", 1])
+```
+
+Here we are interested in which features in particular make some of these texts show properties of conceptual writing. I.e. we want to look at texts from the _creative writing_ category with high scores on dimension 1.
+
+```{r chooseSample3}
+idx <- Meta$textcat20 %in% c("creative writing", "social letters")
+sample3 <- rank(-ICE9.X[idx, 1]) <= 10 # creative writing texts with 10 highest dimension scores
+sample3 <- rownames(ICE9.X)[idx][sample3] # corresponding text IDs 
+cbind(LDA1=ICE9.X[sample3, 1], Meta[sample3, ])
+```
+
+We select `icecan_w2f-013_1`, which is the fifth most extreme text in these two categories. One social letter from ICE-SING is very likely a questionable outlier due to its extreme deviation from the distribution of the category.
+
+```{r chooseText3}
+text3 <- "icecan_w2f-013_1"
+Meta[text3, ]
+```
+
+As before, we obtain feature contributions that push this text to the positive side of the dimension.
+
+```{r contribText3}
+tmp <- sort(ICE9.Contrib1[text3, ], decreasing=TRUE)
+tmp
+sum(tmp[c(2, 4, 6)]) # features relating to personal pronouns
+sum(tmp[tmp > 0]) # total positive contribution
+sum(tmp[tmp < 0]) # total negative contribution
+```
+
+Contrary to what one might expect, the position of the text is not the result of a set of very pronounced “conceptual writing” features pushing against a general “conceptual speaking” character. The total contribution of negative features is rather small.
